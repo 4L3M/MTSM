@@ -1,0 +1,16 @@
+# Ignoruj folder z danymi
+archive/
+
+# Ignoruj wszystkie CSV (jeśli nie chcesz też np. Folds.csv)
+*.csv
+
+# Ignoruj pliki tymczasowe/środowiskowe
+__pycache__/
+*.pyc
+*.pkl
+
+git init                  # jeśli to nowe repo
+git add *.py
+git add .gitignore
+git add README.md
+git commit -m "Initial commit with model scripts only"

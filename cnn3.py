@@ -84,9 +84,7 @@ class DeepCNN(nn.Module):
 
 # Trening
 print("⚙️ Przygotowanie modelu i treningu...")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"🖥️  Używane urządzenie: {device}")
-
+device = torch.device("cpu")  # ❌ brak GPU
 model = DeepCNN().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(model.parameters(), lr=0.01)
