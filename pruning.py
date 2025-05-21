@@ -1,35 +1,25 @@
 import os
 import pandas as pd
+import numpy as np
 from PIL import Image
-from sklearn.model_selection import train_test_split
-from torchvision import transforms
-from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import classification_report, confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score, roc_curve
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-
+from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
 import torch.nn.utils.prune as prune
 
-import time
-from sklearn.metrics import classification_report, confusion_matrix, precision_score, recall_score, f1_score
+import csv
 
-
-print("📥 Wczytywanie danych...")
+print("\U0001F4C5 Wczytywanie danych...")
 df = pd.read_csv('archive/Folds.csv')
-print(f"✔️ Załadowano {len(df)} rekordów.")
-
-# Ekstrakcja etykiet
-def extract_label(path):
-    return 0 if "benign" in path.lower() else 1
-
-df['label'] = df['filename'].apply(extract_label)
+df['label'] = df['filename'].apply(lambda x: 0 if "benign" in x.lower() else 1)
 df['filepath'] = df['filename'].apply(lambda x: os.path.join('archive', x))
-
-# Podział
-print("🔀 Podział na zbiór treningowy i walidacyjny...")
-train_df, val_df = train_test_split(df, test_size=0.2, stratify=df['label'], random_state=42)
-print(f"🔹 Trening: {len(train_df)} próbek, 🔸 Walidacja: {len(val_df)} próbek")
+print(f"✔️ Załadowano {len(df)} rekordów.")
 
 # Dataset
 class HistologyDataset(Dataset):
@@ -54,121 +44,135 @@ transform = transforms.Compose([
     transforms.ToTensor()
 ])
 
-print("🗃️ Przygotowywanie datasetów...")
-train_dataset = HistologyDataset(train_df, transform=transform)
-val_dataset = HistologyDataset(val_df, transform=transform)
-
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-print("✔️ Loadery gotowe.")
-
 # Model
-class DeepPrunedCNN(nn.Module):
+class DeepCNN(nn.Module):
     def __init__(self):
-        super(DeepPrunedCNN, self).__init__()
+        super(DeepCNN, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, 3, padding=1)
         self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
         self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
         self.pool = nn.MaxPool2d(2, 2)
-
         self.fc1 = nn.Linear(64 * 16 * 16, 128)
         self.fc2 = nn.Linear(128, 2)
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))  # 128x128 → 64x64
-        x = self.pool(F.relu(self.conv2(x)))  # 64x64 → 32x32
-        x = self.pool(F.relu(self.conv3(x)))  # 32x32 → 16x16
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool(F.relu(self.conv3(x)))
         x = x.view(-1, 64 * 16 * 16)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return x
 
+# Cross-validation
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+device = torch.device("cpu")
 
-# Trening
-print("⚙️ Przygotowanie modelu i treningu...")
-device = torch.device("cpu")  # ❌ brak GPU
-model = DeepPrunedCNN().to(device)
+accuracies = []
+f1_micro_scores = []
+f1_macro_scores = []
+precision_micro_scores = []
+precision_macro_scores = []
+recall_micro_scores = []
+recall_macro_scores = []
+auc_scores = []
+results = []
+fold = 1
 
-print("🔍 Pruning modelu...")
-prune.l1_unstructured(model.conv1, name="weight", amount=0.2)  # Pruning 20% wag w conv1
-prune.l1_unstructured(model.conv2, name="weight", amount=0.2)  # Pruning 20% wag w conv2
-prune.l1_unstructured(model.conv3, name="weight", amount=0.2)  # Pruning 20% wag w conv3
-prune.l1_unstructured(model.fc1, name="weight", amount=0.2)  # Pruning 20% wag w fc1
+for train_idx, val_idx in skf.split(df['filepath'], df['label']):
+    print(f"\n🔁 Fold {fold}")
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(model.parameters(), lr=0.01)
+    train_df = df.iloc[train_idx].reset_index(drop=True)
+    val_df = df.iloc[val_idx].reset_index(drop=True)
 
-print("🏋️‍♂️ Start treningu...")
-start_time = time.time()
-for epoch in range(5):
+    train_dataset = HistologyDataset(train_df, transform=transform)
+    val_dataset = HistologyDataset(val_df, transform=transform)
+
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+    model = DeepCNN().to(device)
+
+    # Dodanie pruning
+    prune.l1_unstructured(model.conv1, name="weight", amount=0.2)
+    prune.l1_unstructured(model.conv2, name="weight", amount=0.2)
+    prune.l1_unstructured(model.conv3, name="weight", amount=0.2)
+    prune.l1_unstructured(model.fc1, name="weight", amount=0.2)
+    prune.l1_unstructured(model.fc2, name="weight", amount=0.2)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.01)
+
     model.train()
-    running_loss = 0.0
-    print(f"\n🔁 Epoch {epoch+1}/3")
+    for epoch in range(3):
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-    for i, (images, labels) in enumerate(train_loader):
-        images, labels = images.to(device), labels.to(device)
+    model.eval()
+    y_true = []
+    y_pred = []
+    y_probs = []
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            probs = F.softmax(outputs, dim=1)[:, 1]
+            _, predicted = torch.max(outputs.data, 1)
+            y_true.extend(labels.cpu().numpy())
+            y_pred.extend(predicted.cpu().numpy())
+            y_probs.extend(probs.cpu().numpy())
 
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+    acc = 100 * (np.array(y_true) == np.array(y_pred)).sum() / len(y_true)
+    f1_micro = f1_score(y_true, y_pred, average='micro')
+    f1_macro = f1_score(y_true, y_pred, average='macro')
+    precision_micro = precision_score(y_true, y_pred, average='micro')
+    precision_macro = precision_score(y_true, y_pred, average='macro')
+    recall_micro = recall_score(y_true, y_pred, average='micro')
+    recall_macro = recall_score(y_true, y_pred, average='macro')
+    auc = roc_auc_score(y_true, y_probs)
+    cm = confusion_matrix(y_true, y_pred).tolist()
 
-        running_loss += loss.item()
+    print(f"✅ Fold {fold} — Accuracy: {acc:.2f}%, F1_micro: {f1_micro:.4f}, F1_macro: {f1_macro:.4f}, Precision_micro: {precision_micro:.4f}, Precision_macro: {precision_macro:.4f}, Recall_micro: {recall_micro:.4f}, Recall_macro: {recall_macro:.4f}, AUC: {auc:.4f}")
 
-        if (i + 1) % 5 == 0:
-            avg_loss = running_loss / 5
-            print(f"   📦 Batch {i+1}/{len(train_loader)}, Loss: {avg_loss:.4f}")
-            running_loss = 0.0
+    results.append({
+        'fold': fold,
+        'accuracy': acc,
+        'f1_micro': f1_micro,
+        'f1_macro': f1_macro,
+        'precision_micro': precision_micro,
+        'precision_macro': precision_macro,
+        'recall_micro': recall_micro,
+        'recall_macro': recall_macro,
+        'auc': auc,
+        'confusion_matrix': cm
+    })
 
-end_time = time.time()
-train_time = end_time - start_time
-print(f"\n✅ Czas treningu: {train_time:.2f} sekund")
+    accuracies.append(acc)
+    f1_micro_scores.append(f1_micro)
+    f1_macro_scores.append(f1_macro)
+    precision_micro_scores.append(precision_micro)
+    precision_macro_scores.append(precision_macro)
+    recall_micro_scores.append(recall_micro)
+    recall_macro_scores.append(recall_macro)
+    auc_scores.append(auc)
+    fold += 1
 
+# Zapis do CSV
+results_df = pd.DataFrame(results)
+results_df.to_csv("deepcnn_pruning_results.csv", index=False)
 
-print("\n🧪 Walidacja...")
-start_eval = time.time()
-model.eval()
-correct = 0
-total = 0
-y_true = []
-y_pred = []
-
-with torch.no_grad():
-    for i, (images, labels) in enumerate(val_loader):
-        images, labels = images.to(device), labels.to(device)
-        outputs = model(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-
-        y_true.extend(labels.cpu().numpy())
-        y_pred.extend(predicted.cpu().numpy())
-
-        if (i + 1) % 5 == 0:
-            acc = 100 * correct / total
-            print(f"   📊 Batch {i+1}/{len(val_loader)} - Accuracy: {acc:.2f}%")
-
-end_eval = time.time()
-val_time = end_eval - start_eval
-print(f"\n✅ Czas walidacji: {val_time:.2f} sekund")
-
-final_acc = 100 * correct / total
-print(f"\n✅ Final validation accuracy: {final_acc:.2f}%")
-
-# Pozostałe metryki
-print("\n 📊 Szczegółowe metryki: ")
-print(classification_report(y_true, y_pred, target_names=['Benign', 'Malignant']))
-
-print("🔍 Macierz pomyłek:")
-print(confusion_matrix(y_true, y_pred))
-
-# 📌 Micro average metryki
-micro_precision = precision_score(y_true, y_pred, average='micro')
-micro_recall = recall_score(y_true, y_pred, average='micro')
-micro_f1 = f1_score(y_true, y_pred, average='micro')
-
-print("\n📐 Micro average metryki:")
-print(f"   🔹 Precision (micro): {micro_precision:.4f}")
-print(f"   🔹 Recall    (micro): {micro_recall:.4f}")
-print(f"   🔹 F1-score  (micro): {micro_f1:.4f}")
+# Średnie metryki
+print("\n📊 Średnie metryki po 5-fold CV:")
+print(f"   🔹 Accuracy           : {np.mean(accuracies):.2f}% ± {np.std(accuracies):.2f}")
+print(f"   🔹 Micro Precision    : {np.mean(precision_micro_scores):.4f} ± {np.std(precision_micro_scores):.4f}")
+print(f"   🔹 Macro Precision    : {np.mean(precision_macro_scores):.4f} ± {np.std(precision_macro_scores):.4f}")
+print(f"   🔹 Micro Recall       : {np.mean(recall_micro_scores):.4f} ± {np.std(recall_micro_scores):.4f}")
+print(f"   🔹 Macro Recall       : {np.mean(recall_macro_scores):.4f} ± {np.std(recall_macro_scores):.4f}")
+print(f"   🔹 Micro F1-score     : {np.mean(f1_micro_scores):.4f} ± {np.std(f1_micro_scores):.4f}")
+print(f"   🔹 Macro F1-score     : {np.mean(f1_macro_scores):.4f} ± {np.std(f1_macro_scores):.4f}")
+print(f"   🔹 AUC                : {np.mean(auc_scores):.4f} ± {np.std(auc_scores):.4f}")
