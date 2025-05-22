@@ -1,0 +1,16 @@
+
+🚀 Uruchamianie: cnn3.py
+==================================================
+________________ SIEĆ GŁĘBOKA BEZ NICZEGO ________________
+Traceback (most recent call last):
+  File "D:\MTSM\cnn3.py", line 25, in <module>
+    print("\U0001F4C5 Wczytywanie danych...")
+  File "C:\Users\Amelka\AppData\Local\Programs\Python\Python311\Lib\encodings\cp1250.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f4c5' in position 0: character maps to <undefined>
+
+✅ Zakończono: cnn3.py
+
+🚀 Uruchamianie: adagrad.py
+==================================================
