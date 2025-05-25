@@ -18,7 +18,8 @@ import csv
 
 start_time = time.time()
 
-
+print(torch.cuda.is_available())         # True = CUDA działa
+print(torch.cuda.get_device_name(0))     # Powinno pokazać "GeForce GTX 960"
 print("________________ GPU ________________")
 
 
